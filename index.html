@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slither-Style Game</title>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #1a1a2e;
+            font-family: 'Poppins', sans-serif;
+            height: 100vh;
+            color: #e0e0e0;
+        }
+        canvas {
+            background-color: #16213e;
+            display: block;
+        }
+        #ui-container {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            text-align: center;
+            background: rgba(0, 0, 0, 0.3);
+            padding: 10px 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+        #score {
+            font-size: 24px;
+            font-weight: 600;
+            color: #00f2ff;
+        }
+        #modal {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(22, 33, 62, 0.95);
+            padding: 40px;
+            border-radius: 20px;
+            text-align: center;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.4);
+            display: none; /* Initially hidden */
+            border: 1px solid #0f3460;
+            backdrop-filter: blur(5px);
+        }
+        #modal h1 {
+            font-size: 48px;
+            margin-top: 0;
+            color: #e94560;
+            text-shadow: 0 0 10px #e94560;
+        }
+        #final-score {
+            font-size: 28px;
+            margin: 20px 0;
+            color: #00f2ff;
+        }
+        #restart-btn {
+            padding: 15px 30px;
+            font-size: 20px;
+            cursor: pointer;
+            background-color: #00f2ff;
+            color: #16213e;
+            border: none;
+            border-radius: 10px;
+            font-weight: 700;
+            transition: all 0.3s ease;
+            box-shadow: 0 0 20px rgba(0, 242, 255, 0.5);
+        }
+        #restart-btn:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 5px 25px rgba(0, 242, 255, 0.7);
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div id="ui-container">
+        <div id="score">Score: 0</div>
+    </div>
+
+    <div id="modal">
+        <h1>Game Over</h1>
+        <div id="final-score"></div>
+        <button id="restart-btn">Play Again</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreEl = document.getElementById('score');
+        const modal = document.getElementById('modal');
+        const finalScoreEl = document.getElementById('final-score');
+        const restartBtn = document.getElementById('restart-btn');
+        
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+        
+        // --- Game Variables ---
+        let snake, food, weaponFood, score, mouse, isSprinting, gameOver, enemies;
+
+        const worldSize = 2000;
+        let camera = { x: 0, y: 0 };
+
+        // --- Weapon Icons ---
+        const VACUUM_SVG_PATH = new Path2D('M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9v-2h2v2zm4 0h-2v-2h2v2zm0-4h-2v-2h2v2zm-4 0H9v-2h2v2zm5-4h-1v-1c0-2.21-1.79-4-4-4s-4 1.79-4 4v1H7V9h10v3z');
+        const SHIELD_SVG_PATH = new Path2D('M12 2L4 5v6c0 5.55 3.58 10.38 8 11.92 4.42-1.54 8-6.37 8-11.92V5l-8-3z');
+
+
+        // --- Game Objects ---
+        class Snake {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                this.radius = 10;
+                this.speed = 2.5;
+                this.angle = 0;
+                this.segments = [{ x: x, y: y }];
+                this.segmentGap = 8;
+                this.color = `hsl(${Math.random() * 360}, 100%, 70%)`;
+                this.targetLength = 5;
+                this.sprintFrameCounter = 0;
+                this.weapons = []; // N=3 max
+                this.invincibleTimer = 0;
+            }
+
+            update() {
+                if (this.invincibleTimer > 0) {
+                    this.invincibleTimer--;
+                }
+                if (gameOver && !(this instanceof Enemy)) return;
+                
+                this.updateWeapons();
+
+                // Make the snake wider as it gets longer
+                this.radius = 10 + (this.segments.length / 25);
+                
+                let currentSpeed = this.speed;
+
+                // Sprinting logic for player
+                if (this === snake) {
+                    if(isSprinting && this.segments.length > 5){
+                        currentSpeed = this.speed * 2;
+                        
+                        this.sprintFrameCounter++;
+                        if (this.sprintFrameCounter >= 5) {
+                            if (this.segments.length > 5) {
+                                this.segments.pop();
+                                this.targetLength = this.segments.length;
+                            }
+                            this.sprintFrameCounter = 0;
+                        }
+                    } else {
+                        this.sprintFrameCounter = 0;
+                    }
+
+                    const targetAngle = Math.atan2(mouse.y - canvas.height / 2, mouse.x - canvas.width / 2);
+                    let angleDiff = targetAngle - this.angle;
+                    while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+                    while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+                    this.angle += angleDiff * 0.1;
+                }
+                
+                this.x += Math.cos(this.angle) * currentSpeed;
+                this.y += Math.sin(this.angle) * currentSpeed;
+
+                 if (this.x < -worldSize/2 || this.x > worldSize/2 || this.y < -worldSize/2 || this.y > worldSize/2) {
+                    if (this === snake) {
+                        endGame();
+                    } else {
+                        this.target = null;
+                        if (this.x < -worldSize/2 || this.x > worldSize/2) this.angle = Math.PI - this.angle;
+                        if (this.y < -worldSize/2 || this.y > worldSize/2) this.angle = -this.angle;
+                    }
+                }
+
+                this.segments.unshift({ x: this.x, y: this.y });
+                
+                if (this.segments.length > this.targetLength) {
+                    this.segments.pop();
+                }
+            }
+            
+            updateWeapons() {
+                this.weapons.forEach(weapon => {
+                    if (weapon.timer > 0) {
+                        weapon.timer--;
+                    }
+                    if(weapon.type === 'vacuum') {
+                        const vacuumRadius = 50;
+                        food.forEach(f => {
+                            const dist = Math.hypot(this.x - f.x, this.y - f.y);
+                            if (dist < vacuumRadius && dist > this.radius) {
+                                const angle = Math.atan2(this.y - f.y, this.x - f.x);
+                                f.x += Math.cos(angle) * 3;
+                                f.y += Math.sin(angle) * 3;
+                            }
+                        });
+                    }
+                });
+                this.weapons = this.weapons.filter(w => (w.timer && w.timer > 0) || (w.uses && w.uses > 0));
+            }
+
+            addWeapon(type) {
+                const existingWeapon = this.weapons.find(w => w.type === type);
+                if(existingWeapon) {
+                     // If weapon exists, reset its limit to the max.
+                     if (existingWeapon.uses) existingWeapon.uses = existingWeapon.maxUses;
+                     if (existingWeapon.timer) existingWeapon.timer = existingWeapon.maxDuration;
+                     return;
+                }
+
+                if (this.weapons.length >= 3) return; 
+
+                let newWeapon = { type: type };
+                if (type === 'vacuum') {
+                    newWeapon.timer = 30 * 60;
+                    newWeapon.maxDuration = 30 * 60;
+                } else if (type === 'shield') {
+                    newWeapon.uses = 5;
+                    newWeapon.maxUses = 5;
+                }
+                this.weapons.push(newWeapon);
+            }
+            
+            useWeapon(type) {
+                const weapon = this.weapons.find(w => w.type === type);
+                if (weapon && weapon.uses > 0) {
+                    weapon.uses--;
+                    this.invincibleTimer = 60; // 1 second of invincibility at 60fps
+                    return true;
+                }
+                return false;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(-camera.x, -camera.y);
+                
+                // Add flashing effect when invincible
+                if (this.invincibleTimer > 0 && this.invincibleTimer % 10 < 5) {
+                    ctx.globalAlpha = 0.5;
+                }
+
+                for (let i = this.segments.length - 1; i > 0; i--) {
+                    const segment = this.segments[i];
+                    const nextSegment = this.segments[i-1];
+                    const size = this.radius * (i / this.segments.length * 0.5 + 0.5);
+                    ctx.beginPath();
+                    ctx.moveTo(segment.x, segment.y);
+                    ctx.lineTo(nextSegment.x, nextSegment.y);
+                    ctx.strokeStyle = this.color;
+                    ctx.lineWidth = size * 2;
+                    ctx.lineCap = 'round';
+                    ctx.stroke();
+                }
+
+                const head = this.segments[0];
+                ctx.beginPath();
+                ctx.arc(head.x, head.y, this.radius, 0, Math.PI * 2);
+                ctx.fillStyle = this.color;
+                ctx.fill();
+
+                // Reset alpha before drawing eyes and weapons
+                ctx.globalAlpha = 1.0;
+
+                const eyeAngle = this.angle;
+                const eyeDist = this.radius * 0.5;
+                const eyeRadius = this.radius * 0.2;
+                
+                const eye1X = head.x + Math.cos(eyeAngle + Math.PI/4) * eyeDist;
+                const eye1Y = head.y + Math.sin(eyeAngle + Math.PI/4) * eyeDist;
+                const eye2X = head.x + Math.cos(eyeAngle - Math.PI/4) * eyeDist;
+                const eye2Y = head.y + Math.sin(eyeAngle - Math.PI/4) * eyeDist;
+
+                ctx.beginPath();
+                ctx.arc(eye1X, eye1Y, eyeRadius, 0, Math.PI * 2);
+                ctx.arc(eye2X, eye2Y, eyeRadius, 0, Math.PI * 2);
+                ctx.fillStyle = 'white';
+                ctx.fill();
+                
+                ctx.beginPath();
+                ctx.arc(eye1X, eye1Y, eyeRadius * 0.5, 0, Math.PI * 2);
+                ctx.arc(eye2X, eye2Y, eyeRadius * 0.5, 0, Math.PI * 2);
+                ctx.fillStyle = 'black';
+                ctx.fill();
+
+                this.drawWeapons();
+
+                ctx.restore();
+            }
+
+            drawWeapons() {
+                if (this.weapons.length === 0) return;
+
+                const anchorIndex = Math.min(5, this.segments.length - 2);
+                if (anchorIndex < 1) return;
+
+                const segment = this.segments[anchorIndex];
+                const prevSegment = this.segments[anchorIndex - 1];
+
+                const bodyAngle = Math.atan2(prevSegment.y - segment.y, prevSegment.x - segment.x);
+                
+                this.weapons.forEach((weapon, i) => {
+                    const perpendicularAngle = bodyAngle + Math.PI / 2;
+                    const spacing = 35;
+                    const totalWidth = (this.weapons.length - 1) * spacing;
+                    const offset = (i * spacing) - (totalWidth / 2);
+
+                    const iconX = segment.x + Math.cos(perpendicularAngle) * offset;
+                    const iconY = segment.y + Math.sin(perpendicularAngle) * offset;
+
+                    ctx.save();
+                    ctx.translate(iconX, iconY);
+                    ctx.rotate(bodyAngle);
+
+                    const boxSize = 30;
+                    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
+                    ctx.fillRect(-boxSize / 2, -boxSize / 2, boxSize, boxSize);
+
+                    let fillRatio = 0;
+                    if (weapon.timer) {
+                        fillRatio = weapon.timer / weapon.maxDuration;
+                    } else if (weapon.uses) {
+                        fillRatio = weapon.uses / weapon.maxUses;
+                    }
+                    const indicatorHeight = boxSize * fillRatio;
+
+                    let indicatorColor = '#00f2ff'; // Default for vacuum
+                    if (weapon.type === 'shield') {
+                        indicatorColor = '#FFC300'; // Yellow for shield
+                    }
+                    ctx.fillStyle = indicatorColor;
+                    
+                    ctx.fillRect(-boxSize / 2, -boxSize / 2 + (boxSize - indicatorHeight), boxSize, indicatorHeight);
+
+                    ctx.fillStyle = 'white';
+                    ctx.save();
+                    ctx.scale(1.2, 1.2);
+                    ctx.translate(-12, -12);
+                    if (weapon.type === 'vacuum') {
+                        ctx.fill(VACUUM_SVG_PATH);
+                    } else if (weapon.type === 'shield') {
+                        ctx.fill(SHIELD_SVG_PATH);
+                    }
+                    ctx.restore();
+                    ctx.restore();
+                });
+            }
+
+            grow() {
+                this.targetLength += 2;
+            }
+        }
+
+        class Enemy extends Snake {
+            constructor(x, y) {
+                super(x, y);
+                this.speed = 1.5 + Math.random() * 1;
+                this.decisionCooldown = 0;
+                this.state = 'wandering';
+                this.target = null;
+            }
+
+            makeDecision() {
+                const playerDist = Math.hypot(this.x - snake.x, this.y - snake.y);
+                if (playerDist < 300 && this.segments.length > snake.segments.length) {
+                    this.state = 'attackingPlayer';
+                    this.target = snake;
+                    return;
+                }
+
+                let closestWeaponFood = null;
+                let minWeaponFoodDist = Infinity;
+                weaponFood.forEach(wf => {
+                    const dist = Math.hypot(this.x - wf.x, this.y - wf.y);
+                    if (dist < minWeaponFoodDist) {
+                        minWeaponFoodDist = dist;
+                        closestWeaponFood = wf;
+                    }
+                });
+                if (closestWeaponFood) {
+                    this.state = 'huntingFood';
+                    this.target = closestWeaponFood;
+                    return;
+                }
+
+                let closestFood = null;
+                let minFoodDist = Infinity;
+                food.forEach(f => {
+                    const dist = Math.hypot(this.x - f.x, this.y - f.y);
+                    if (dist < minFoodDist) {
+                        minFoodDist = dist;
+                        closestFood = f;
+                    }
+                });
+
+                if (closestFood) {
+                    this.state = 'huntingFood';
+                    this.target = closestFood;
+                } else {
+                    this.state = 'wandering';
+                     if (!this.target || Math.hypot(this.x - this.target.x, this.y - this.target.y) < 50) {
+                        this.target = {
+                            x: Math.random() * worldSize - worldSize / 2,
+                            y: Math.random() * worldSize - worldSize / 2
+                        };
+                    }
+                }
+            }
+
+            update() {
+                this.decisionCooldown--;
+                if (this.decisionCooldown <= 0) {
+                    this.makeDecision();
+                    this.decisionCooldown = 60;
+                }
+
+                if (this.target) {
+                    if((this.state === 'huntingFood' && ![...food, ...weaponFood].includes(this.target))){
+                        this.target = null;
+                        this.makeDecision();
+                    }
+                    if(this.target){
+                        const targetAngle = Math.atan2(this.target.y - this.y, this.target.x - this.x);
+                        let angleDiff = targetAngle - this.angle;
+                        while (angleDiff < -Math.PI) angleDiff += 2 * Math.PI;
+                        while (angleDiff > Math.PI) angleDiff -= 2 * Math.PI;
+                        this.angle += angleDiff * 0.1;
+                    }
+                }
+                super.update();
+            }
+        }
+
+        class Food {
+            constructor(x, y, radius = 5) {
+                this.x = x !== undefined ? x : Math.random() * worldSize - worldSize/2;
+                this.y = y !== undefined ? y : Math.random() * worldSize - worldSize/2;
+                this.radius = radius;
+                this.color = `hsl(${Math.random() * 360}, 100%, 75%)`;
+            }
+
+            draw() {
+                ctx.save();
+                ctx.translate(-camera.x, -camera.y);
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, this.radius, 0, Math.PI * 2);
+                const grad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.radius * 2);
+                grad.addColorStop(0, this.color);
+                grad.addColorStop(0.5, this.color);
+                grad.addColorStop(1, 'rgba(0,0,0,0)');
+                ctx.fillStyle = grad;
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
+        class WeaponFood extends Food {
+            constructor(type) {
+                super(undefined, undefined, 10);
+                this.type = type;
+                this.angle = 0;
+            }
+
+            draw() {
+                 ctx.save();
+                ctx.translate(-camera.x, -camera.y);
+                this.angle += 0.02;
+
+                const pulse = Math.sin(this.angle * 5) * 2 + this.radius;
+                const grad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, pulse * 2.5);
+                
+                let glowColor = '#00f2ff';
+                let glowRgba = 'rgba(0, 242, 255, 0)';
+                if (this.type === 'shield') {
+                    glowColor = '#FFC300';
+                    glowRgba = 'rgba(255, 195, 0, 0)';
+                }
+                grad.addColorStop(0, 'rgba(255, 255, 255, 0.8)');
+                grad.addColorStop(0.4, glowColor);
+                grad.addColorStop(1, glowRgba);
+                
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.arc(this.x, this.y, pulse * 2.5, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.fillStyle = 'white';
+                ctx.save();
+                ctx.translate(this.x, this.y);
+                ctx.rotate(this.angle);
+                ctx.scale(0.8, 0.8);
+                ctx.translate(-12, -12);
+                if (this.type === 'vacuum') {
+                    ctx.fill(VACUUM_SVG_PATH);
+                } else if (this.type === 'shield') {
+                    ctx.fill(SHIELD_SVG_PATH);
+                }
+                ctx.restore();
+                ctx.restore();
+            }
+        }
+
+        // --- Game Functions ---
+        function init() {
+            gameOver = false;
+            snake = new Snake(0, 0);
+            enemies = [];
+            for (let i = 0; i < 10; i++) {
+                enemies.push(new Enemy(
+                    Math.random() * worldSize - worldSize/2, 
+                    Math.random() * worldSize - worldSize/2
+                ));
+            }
+
+            food = [];
+            for (let i = 0; i < 150; i++) food.push(new Food());
+
+            weaponFood = [];
+            for (let i = 0; i < 3; i++) weaponFood.push(new WeaponFood('vacuum'));
+            for (let i = 0; i < 2; i++) weaponFood.push(new WeaponFood('shield'));
+
+            score = 0;
+            mouse = { x: canvas.width / 2, y: canvas.height / 2 };
+            isSprinting = false;
+
+            modal.style.display = 'none';
+            scoreEl.textContent = `Score: 0`;
+            gameLoop();
+        }
+        
+        function gameLoop() {
+            if (gameOver) return;
+            updateState();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        function updateState() {
+            snake.update();
+            enemies.forEach(e => e.update());
+            checkCollisions(); // Consolidated collision checks
+            updateCamera();
+
+            score = snake.segments.length;
+            scoreEl.textContent = `Score: ${score}`;
+        }
+        
+        function checkFoodCollision(entity) {
+             // Normal food
+             food.forEach((f, index) => {
+                const dist = Math.hypot(entity.x - f.x, entity.y - f.y);
+                if (dist < entity.radius + f.radius) {
+                    if (entity instanceof Enemy && entity.target === f) entity.target = null;
+                    food.splice(index, 1);
+                    food.push(new Food());
+                    entity.grow();
+                }
+            });
+
+            // Weapon food
+            weaponFood.forEach((wf, index) => {
+                 const dist = Math.hypot(entity.x - wf.x, entity.y - wf.y);
+                 if (dist < entity.radius + wf.radius) {
+                     entity.addWeapon(wf.type);
+                     if (entity instanceof Enemy && entity.target === wf) entity.target = null;
+                     weaponFood.splice(index, 1);
+                     setTimeout(() => {
+                         const type = Math.random() < 0.6 ? 'vacuum' : 'shield';
+                         weaponFood.push(new WeaponFood(type));
+                     }, 5000);
+                 }
+            });
+        }
+
+        function checkCollisions() {
+            if (gameOver) return;
+            
+            checkFoodCollision(snake);
+            enemies.forEach(enemy => checkFoodCollision(enemy));
+
+            const allSnakes = [snake, ...enemies];
+
+            for (let i = 0; i < allSnakes.length; i++) {
+                const s1 = allSnakes[i];
+                if (!s1.segments.length) continue;
+
+                // --- Self Collision (Player only) ---
+                if (s1 === snake && s1.invincibleTimer <= 0) {
+                    for (let k = 4; k < s1.segments.length; k++) {
+                        if (Math.hypot(s1.x - s1.segments[k].x, s1.y - s1.segments[k].y) < s1.segmentGap) {
+                            if (!s1.useWeapon('shield')) {
+                                endGame();
+                                return;
+                            }
+                            break; 
+                        }
+                    }
+                }
+                if (gameOver) return;
+
+                // --- Head-on-Body Collision ---
+                for (let j = i + 1; j < allSnakes.length; j++) {
+                    const s2 = allSnakes[j];
+                    if (!s2.segments.length) continue;
+
+                    // S1 head vs S2 body
+                    if (s1.invincibleTimer <= 0) {
+                        for(let k = 1; k < s2.segments.length; k++) {
+                            if (Math.hypot(s1.x - s2.segments[k].x, s1.y - s2.segments[k].y) < s1.radius) {
+                                if (!s1.useWeapon('shield')) {
+                                    s1 === snake ? endGame() : killAndSpawnFood(s1, enemies.indexOf(s1));
+                                }
+                                break; 
+                            }
+                        }
+                    }
+                    if ((s1 === snake && gameOver) || s1.invincibleTimer > 0) break;
+
+                    // S2 head vs S1 body
+                    if (s2.invincibleTimer <= 0) {
+                         for(let k = 1; k < s1.segments.length; k++) {
+                            if (Math.hypot(s2.x - s1.segments[k].x, s2.y - s1.segments[k].y) < s2.radius) {
+                                 if (!s2.useWeapon('shield')) {
+                                    s2 === snake ? endGame() : killAndSpawnFood(s2, enemies.indexOf(s2));
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    if (s2 === snake && gameOver) return;
+                }
+            }
+        }
+
+        function killAndSpawnFood(entity, index) {
+            for(let i = 0; i < entity.segments.length; i += 3) {
+                food.push(new Food(entity.segments[i].x, entity.segments[i].y, 7));
+            }
+            if (entity !== snake) {
+                enemies.splice(index, 1);
+                setTimeout(() => {
+                    if (enemies.length < 10) {
+                       enemies.push(new Enemy(Math.random() * worldSize - worldSize/2, Math.random() * worldSize - worldSize/2));
+                    }
+                }, 1000);
+            }
+        }
+        
+        function updateCamera() {
+            const targetX = snake.x - canvas.width / 2;
+            const targetY = snake.y - canvas.height / 2;
+            camera.x += (targetX - camera.x) * 0.1;
+            camera.y += (targetY - camera.y) * 0.1;
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawGrid();
+            food.forEach(f => f.draw());
+            weaponFood.forEach(wf => wf.draw());
+            enemies.forEach(e => e.draw());
+            if(!gameOver) snake.draw();
+            drawWorldBorder();
+        }
+
+        function drawGrid() {
+            ctx.save();
+            ctx.translate(-camera.x, -camera.y);
+            const gridSize = 50;
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+            ctx.lineWidth = 1;
+            for (let x = -worldSize/2; x <= worldSize/2; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, -worldSize/2);
+                ctx.lineTo(x, worldSize/2);
+                ctx.stroke();
+            }
+            for (let y = -worldSize/2; y <= worldSize/2; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(-worldSize/2, y);
+                ctx.lineTo(worldSize/2, y);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        function drawWorldBorder() {
+            ctx.save();
+            ctx.translate(-camera.x, -camera.y);
+            ctx.strokeStyle = '#e94560';
+            ctx.lineWidth = 10;
+            ctx.strokeRect(-worldSize/2, -worldSize/2, worldSize, worldSize);
+            ctx.restore();
+        }
+
+        function endGame() {
+            if (gameOver) return;
+            gameOver = true;
+            killAndSpawnFood(snake);
+            finalScoreEl.textContent = `Your Score: ${score}`;
+            modal.style.display = 'block';
+        }
+
+        // --- Event Listeners ---
+        window.addEventListener('mousemove', e => {
+            if(!mouse) return;
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = e.clientX - rect.left;
+            mouse.y = e.clientY - rect.top;
+        });
+        
+        window.addEventListener('mousedown', () => isSprinting = true);
+        window.addEventListener('mouseup', () => isSprinting = false);
+        window.addEventListener('touchstart', (e) => {
+             if(!mouse) return;
+             const rect = canvas.getBoundingClientRect();
+             mouse.x = e.touches[0].clientX - rect.left;
+             mouse.y = e.touches[0].clientY - rect.top;
+             isSprinting = true;
+        });
+        window.addEventListener('touchend', () => isSprinting = false);
+        window.addEventListener('touchmove', (e) => {
+            if(!mouse) return;
+            const rect = canvas.getBoundingClientRect();
+            mouse.x = e.touches[0].clientX - rect.left;
+            mouse.y = e.touches[0].clientY - rect.top;
+        });
+
+        restartBtn.addEventListener('click', init);
+
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        });
+
+        // --- Start Game ---
+        init();
+    </script>
+</body>
+</html>
+
